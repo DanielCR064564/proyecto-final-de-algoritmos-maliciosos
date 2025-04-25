@@ -1,0 +1,96 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <openssl/evp.h>
+
+#define CARPETA "./archivos_prueba/"  // Ruta de los archivos cifrados
+#define CLAVE_LEN 32                  // Tamaño de la clave AES-256
+#define IV_LEN 16                     // Tamaño del vector de inicialización (IV)
+
+// Verifica si el archivo tiene la extensión ".chacho"
+int es_txt(const char *nombre) {
+    const char *ext = strrchr(nombre, '.');
+    return ext && strcmp(ext, ".chacho") == 0;
+}
+
+// Función para descifrar un archivo usando AES-256-CBC
+void descifrar_archivo(const char *ruta, unsigned char *clave, unsigned char *iv) {
+    FILE *in = fopen(ruta, "rb");
+    fseek(in, 0, SEEK_END);            // Mueve el puntero al final del archivo
+    long tam = ftell(in);              // Obtiene el tamaño total del archivo
+    rewind(in);                        // Vuelve al inicio del archivo
+
+    unsigned char *buffer = malloc(tam);     // Reserva memoria para el contenido cifrado
+    fread(buffer, 1, tam, in);               // Lee el contenido del archivo cifrado
+    fclose(in);
+
+    // Prepara el contexto para descifrar con OpenSSL
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    unsigned char *plaintext = malloc(tam);  // Espacio para el resultado descifrado
+    int len, final_len;
+
+    // Inicializa el descifrado con AES-256-CBC, clave y IV
+    EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, clave, iv);
+    EVP_DecryptUpdate(ctx, plaintext, &len, buffer, tam);           // Parte principal
+    EVP_DecryptFinal_ex(ctx, plaintext + len, &final_len);          // Agrega bloques finales
+    EVP_CIPHER_CTX_free(ctx);                                       // Libera el contexto
+
+    // Prepara el nombre del nuevo archivo quitando la extensión ".chacho"
+    char new_ruta[512];
+    snprintf(new_ruta, sizeof(new_ruta), "%s", ruta);
+    new_ruta[strlen(new_ruta) - 7] = '\0';  // Elimina los últimos 7 caracteres: ".chacho"
+
+    // Guarda el contenido descifrado en el nuevo archivo
+    FILE *out = fopen(new_ruta, "wb");
+    fwrite(plaintext, 1, len + final_len, out);
+    fclose(out);
+
+    // Elimina el archivo cifrado original
+    remove(ruta);
+
+    free(buffer);
+    free(plaintext);
+}
+
+// Recorre la carpeta y descifra cada archivo con extensión ".chacho"
+void recorrer_y_descifrar(const char *ruta, unsigned char *clave, unsigned char *iv) {
+    DIR *d = opendir(ruta);
+    struct dirent *dir;
+    char path[512];
+
+    while ((dir = readdir(d)) != NULL) {
+        // Ignora las entradas "." y ".."
+        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
+
+        // Construye la ruta completa del archivo
+        snprintf(path, sizeof(path), "%s%s", ruta, dir->d_name);
+
+        // Si es un archivo regular y tiene extensión .chacho, lo descifra
+        if (dir->d_type == DT_REG && es_txt(dir->d_name)) {
+            descifrar_archivo(path, clave, iv);
+            printf("Descifrado: %s\n", path);
+        }
+    }
+    closedir(d);
+}
+
+
+int main() {
+    unsigned char clave[CLAVE_LEN];
+    unsigned char iv[IV_LEN];
+
+    // Abre el archivo "clave.key" para leer la clave y el IV usados en el cifrado original
+    FILE *f = fopen("clave.key", "rb");
+    fread(clave, 1, CLAVE_LEN, f);  
+    fread(iv, 1, IV_LEN, f);        
+    fclose(f);
+
+    // Llama a la función para descifrar todos los archivos cifrados en la carpeta
+    recorrer_y_descifrar(CARPETA, clave, iv);
+
+   
+    printf("Archivos restaurados correctamente.\n");
+
+    return 0;
+}
